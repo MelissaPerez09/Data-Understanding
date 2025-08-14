@@ -144,7 +144,7 @@ ENV/
 env.bak/
 venv.bak/
 
-src/clean
+src/clean/*.csv
 
 # Spyder project settings
 .spyderproject
