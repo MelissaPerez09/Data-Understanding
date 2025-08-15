@@ -64,7 +64,7 @@ st.markdown("""
 def load_data():
     """Cargar datos limpios desde la carpeta clean"""
     try:
-        data_dir = Path("./clean")
+        data_dir = Path("./src/clean")
         
         categoria = pd.read_csv(data_dir / "categoria_clean.csv")
         cliente = pd.read_csv(data_dir / "cliente_clean.csv")
@@ -179,63 +179,148 @@ def calculate_kpis(sales_data, events, cliente):
             avg_items_per_transaction = sales_data.groupby('transactionid')['itemid'].nunique().mean()
         else:
             avg_items_per_transaction = 1.0  # Asumir 1 item por evento
+
+        # KPI 5: Ticket promedio por transacción
+        if 'transactionid' in sales_data.columns:
+            ticket_promedio = sales_data.groupby('transactionid')['revenue'].sum().mean()
+        else:
+            ticket_promedio = sales_data['revenue'].mean()
+        
+        # KPI 6: Tasa de repetición de clientes
+        if 'visitorid' in sales_data.columns:
+            compras_por_cliente = sales_data.groupby('visitorid')['transactionid'].nunique()
+            clientes_recurrentes = (compras_por_cliente > 1).sum()
+            tasa_repeticion = (clientes_recurrentes / compras_por_cliente.count() * 100) if compras_por_cliente.count() > 0 else 0
+        else:
+            tasa_repeticion = 0
         
     else:
         avg_clv = 0
         conversion_rate = 0
         avg_order_value = 0
         avg_items_per_transaction = 0
+        ticket_promedio = 0
+        tasa_repeticion = 0
     
     return {
         'avg_clv': avg_clv,
         'conversion_rate': conversion_rate,
         'avg_order_value': avg_order_value,
-        'avg_items_per_transaction': avg_items_per_transaction
+        'avg_items_per_transaction': avg_items_per_transaction,
+        'ticket_promedio': ticket_promedio,
+        'tasa_repeticion': tasa_repeticion
     }
 
 def create_charts(sales_data, events):
-    """Crear gráficos principales"""
+    """Crear gráficos principales y métricas atractivas"""
     charts = {}
-    
+
     if not sales_data.empty:
-        # Ventas por categoría
+        # --- Pie chart agrupando categorías <1.5% como 'Otras' ---
         cat_sales = sales_data.groupby('categoria_nombre')['revenue'].sum().reset_index()
-        fig_cat = px.pie(cat_sales, values='revenue', names='categoria_nombre',
-                        title='Distribución de Ventas por Categoría',
-                        color_discrete_sequence=px.colors.qualitative.Set3)
+        total = cat_sales['revenue'].sum()
+        cat_sales['pct'] = cat_sales['revenue'] / total * 100
+        # Separar principales y otras
+        main_cats = cat_sales[cat_sales['pct'] >= 1.5].copy()
+        other_cats = cat_sales[cat_sales['pct'] < 1.5].copy()
+        if not other_cats.empty:
+            otras_row = pd.DataFrame({
+                'categoria_nombre': ['Otras'],
+                'revenue': [other_cats['revenue'].sum()],
+                'pct': [other_cats['pct'].sum()]
+            })
+            cat_sales_plot = pd.concat([main_cats, otras_row], ignore_index=True)
+        else:
+            cat_sales_plot = main_cats.copy()
+        fig_cat = px.pie(
+            cat_sales_plot,
+            values='revenue',
+            names='categoria_nombre',
+            title='Distribución de Ventas por Categoría',
+            color_discrete_sequence=px.colors.qualitative.Set3
+        )
+        fig_cat.update_traces(
+            text=cat_sales_plot['categoria_nombre'],
+            hovertemplate=[
+                f"{row['categoria_nombre']}: {row['pct']:.1f}%<br>Ventas: ${row['revenue']:,.2f}"
+                for _, row in cat_sales_plot.iterrows()
+            ],
+            textinfo='label'
+        )
         fig_cat.update_layout(height=400)
         charts['category_sales'] = fig_cat
-        
-        # Ventas por marca
+
+        # --- Top 10 Marcas ---
         marca_sales = sales_data.groupby('marca_nombre')['revenue'].sum().sort_values(ascending=False).head(10).reset_index()
-        fig_marca = px.bar(marca_sales, x='marca_nombre', y='revenue',
-                          title='Top 10 Marcas por Ventas',
-                          color='revenue',
-                          color_continuous_scale='viridis')
+        fig_marca = px.bar(
+            marca_sales, x='marca_nombre', y='revenue',
+            title='Top 10 Marcas por Ventas',
+            color='revenue',
+            color_continuous_scale='viridis'
+        )
         fig_marca.update_layout(height=400, xaxis_tickangle=-45)
         charts['brand_sales'] = fig_marca
-        
-        # Ventas por tiempo (si hay datos temporales)
+
+        # --- Ventas diarias ---
         if 'event_time' in sales_data.columns:
             daily_sales = sales_data.groupby(sales_data['event_time'].dt.date)['revenue'].sum().reset_index()
-            fig_time = px.line(daily_sales, x='event_time', y='revenue',
-                              title='Evolución de Ventas Diarias',
-                              markers=True)
+            fig_time = px.line(
+                daily_sales, x='event_time', y='revenue',
+                title='Evolución de Ventas Diarias',
+                markers=True
+            )
             fig_time.update_traces(line_color=COLORS['primary'])
             fig_time.update_layout(height=400)
             charts['time_sales'] = fig_time
-    
-    # Eventos por tipo
+
+        # --- KPIs y tablas atractivas ---
+        # Puedes llamar a estos desde main() para mayor control visual
+        charts['ventas_cliente'] = sales_data.groupby('visitorid')['revenue'].sum().reset_index().sort_values('revenue', ascending=False).head(10)
+        charts['ventas_producto'] = sales_data.groupby('itemid')['revenue'].sum().reset_index().sort_values('revenue', ascending=False).head(10)
+        charts['ventas_categoria'] = cat_sales.sort_values('revenue', ascending=False).head(10)
+        charts['ventas_marca'] = marca_sales
+        if 'event_time' in sales_data.columns:
+            charts['ventas_fecha'] = sales_data.groupby(sales_data['event_time'].dt.date)['revenue'].sum().reset_index().sort_values('event_time')
+
+    # --- Eventos por tipo ---
     if not events.empty and 'event' in events.columns:
         event_counts = events['event'].value_counts().reset_index()
-        fig_events = px.bar(event_counts, x='event', y='count',
-                           title='Distribución de Eventos por Tipo',
-                           color='count',
-                           color_continuous_scale='blues')
+        fig_events = px.bar(
+            event_counts, x='event', y='count',
+            title='Distribución de Eventos por Tipo',
+            color='count',
+            color_continuous_scale='blues'
+        )
         fig_events.update_layout(height=400)
         charts['event_distribution'] = fig_events
-    
+
     return charts
+
+# --- INICIO: Diccionario id -> nombre completo ---
+clientes_df = pd.read_csv('src/clean/cliente_clean.csv')
+id_to_nombre = {
+    float(row['id']): f"{row['nombre']} {row['apellido']}"
+    for _, row in clientes_df.iterrows()
+}
+# --- FIN ---
+
+# --- INICIO: Función para convertir lista de ids a nombres ---
+def ids_a_nombres(lista_ids):
+    """
+    Convierte una lista de IDs en una lista de nombres completos.
+    """
+    return [id_to_nombre.get(float(i), f"ID {i}") for i in lista_ids]
+# --- FIN ---
+
+# --- INICIO: Función para reemplazar id por nombre completo en DataFrame ---
+def reemplazar_id_por_nombre(df, columna_id='id'):
+    """
+    Reemplaza la columna de id por el nombre completo en un DataFrame.
+    """
+    df = df.copy()
+    df['Cliente'] = df[columna_id].apply(lambda i: id_to_nombre.get(float(i), f"ID {i}"))
+    return df.drop(columns=[columna_id])
+# --- FIN ---
 
 def main():
     # Header principal
@@ -321,9 +406,8 @@ def main():
     
     # KPIs Principales
     st.header("🎯 KPIs Clave")
-    
-    kpi_col1, kpi_col2 = st.columns(2)
-    
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+
     with kpi_col1:
         st.markdown(
             f"""
@@ -335,7 +419,6 @@ def main():
             """, 
             unsafe_allow_html=True
         )
-    
     with kpi_col2:
         st.markdown(
             f"""
@@ -343,6 +426,28 @@ def main():
                 <h3>📊 Tasa de Conversión</h3>
                 <h2>{kpis['conversion_rate']:.2f}%</h2>
                 <p>Porcentaje de eventos que resultan en transacciones</p>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+    with kpi_col3:
+        st.markdown(
+            f"""
+            <div class="kpi-container">
+                <h3>🧾 Ticket Promedio por Transacción</h3>
+                <h2>${kpis['ticket_promedio']:,.2f}</h2>
+                <p>Promedio de ingresos por transacción</p>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+    with kpi_col4:
+        st.markdown(
+            f"""
+            <div class="kpi-container">
+                <h3>🔁 Tasa de Repetición de Clientes</h3>
+                <h2>{kpis['tasa_repeticion']:.2f}%</h2>
+                <p>Porcentaje de clientes con más de una compra</p>
             </div>
             """, 
             unsafe_allow_html=True
@@ -370,39 +475,140 @@ def main():
         if 'event_distribution' in charts:
             st.plotly_chart(charts['event_distribution'], use_container_width=True)
     
-    # Tabla de resumen por producto
-    st.header("📋 Resumen de Actividad")
-    
-    if not sales_data.empty:
-        # Determinar qué columnas usar para el resumen
-        group_cols = []
-        if 'itemid' in sales_data.columns:
-            group_cols.append('itemid')
-        if 'categoria_nombre' in sales_data.columns:
-            group_cols.append('categoria_nombre')
-        if 'marca_nombre' in sales_data.columns:
-            group_cols.append('marca_nombre')
-        
-        if group_cols:
-            agg_dict = {'revenue': ['sum', 'count', 'mean']}
-            if 'visitorid' in sales_data.columns:
-                agg_dict['visitorid'] = 'nunique'
-                
-            summary = (sales_data.groupby(group_cols).agg(agg_dict).round(2))
-            
-            # Renombrar columnas
-            new_cols = ['Revenue Total', 'Eventos', 'Revenue Promedio']
-            if 'visitorid' in agg_dict:
-                new_cols.append('Visitantes Únicos')
-            summary.columns = new_cols
-            
-            summary = summary.sort_values('Revenue Total', ascending=False).head(20)
-            st.dataframe(summary, use_container_width=True)
+
+    # Sección de métricas de ventas por entidad
+
+        st.header("Métricas de Ventas por Cliente, Producto, Categoría, Marca y Fecha")
+        if not sales_data.empty:
+            # Top 1 visual cards
+            card_col1, card_col2, card_col3, card_col4 = st.columns(4)
+            # Top Cliente
+            if 'ventas_cliente' in charts and not charts['ventas_cliente'].empty:
+                top_cliente = charts['ventas_cliente'].iloc[0]
+                with card_col1:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h3>🧑‍💼 Cliente Top</h3>
+                        <h2>{top_cliente['visitorid']}</h2>
+                        <p><b>${top_cliente['revenue']:,.2f}</b></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            # Top Producto
+            if 'ventas_producto' in charts and not charts['ventas_producto'].empty:
+                top_producto = charts['ventas_producto'].iloc[0]
+                with card_col2:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h3>📦 Producto Top</h3>
+                        <h2>{top_producto['itemid']}</h2>
+                        <p><b>${top_producto['revenue']:,.2f}</b></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            # Top Categoría
+            if 'ventas_categoria' in charts and not charts['ventas_categoria'].empty:
+                top_categoria = charts['ventas_categoria'].iloc[0]
+                with card_col3:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h3>🏷️ Categoría Top</h3>
+                        <h2>{top_categoria['categoria_nombre']}</h2>
+                        <p><b>${top_categoria['revenue']:,.2f}</b></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            # Top Marca
+            if 'ventas_marca' in charts and not charts['ventas_marca'].empty:
+                top_marca = charts['ventas_marca'].iloc[0]
+                with card_col4:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h3>🏭 Marca Top</h3>
+                        <h2>{top_marca['marca_nombre']}</h2>
+                        <p><b>${top_marca['revenue']:,.2f}</b></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # Gráficos de barras horizontales para Top 10
+            bar_col1, bar_col2 = st.columns(2)
+            with bar_col1:
+                st.markdown("#### 🧑‍💼 Top 10 Clientes por Ventas")
+                if 'ventas_cliente' in charts and not charts['ventas_cliente'].empty:
+                    fig_clientes = px.bar(
+                        charts['ventas_cliente'].sort_values('revenue'),
+                        x='revenue', y='visitorid', orientation='h',
+                        color='revenue', color_continuous_scale='Blues',
+                        labels={'revenue': 'Ventas', 'visitorid': 'Cliente'},
+                        title='Top 10 Clientes por Ventas'
+                    )
+                    fig_clientes.update_layout(height=350, yaxis_title=None, xaxis_title=None, showlegend=False)
+                    st.plotly_chart(fig_clientes, use_container_width=True)
+                st.markdown("#### 📦 Top 10 Productos por Ventas")
+                if 'ventas_producto' in charts and not charts['ventas_producto'].empty:
+                    fig_productos = px.bar(
+                        charts['ventas_producto'].sort_values('revenue'),
+                        x='revenue', y='itemid', orientation='h',
+                        color='revenue', color_continuous_scale='Greens',
+                        labels={'revenue': 'Ventas', 'itemid': 'Producto'},
+                        title='Top 10 Productos por Ventas'
+                    )
+                    fig_productos.update_layout(height=350, yaxis_title=None, xaxis_title=None, showlegend=False)
+                    st.plotly_chart(fig_productos, use_container_width=True)
+            with bar_col2:
+                st.markdown("#### 🏷️ Top 10 Categorías por Ventas")
+                if 'ventas_categoria' in charts and not charts['ventas_categoria'].empty:
+                    fig_categorias = px.bar(
+                        charts['ventas_categoria'].sort_values('revenue'),
+                        x='revenue', y='categoria_nombre', orientation='h',
+                        color='revenue', color_continuous_scale='Purples',
+                        labels={'revenue': 'Ventas', 'categoria_nombre': 'Categoría'},
+                        title='Top 10 Categorías por Ventas'
+                    )
+                    fig_categorias.update_layout(height=350, yaxis_title=None, xaxis_title=None, showlegend=False)
+                    st.plotly_chart(fig_categorias, use_container_width=True)
+                st.markdown("#### 🏭 Top 10 Marcas por Ventas")
+                if 'ventas_marca' in charts and not charts['ventas_marca'].empty:
+                    fig_marcas = px.bar(
+                        charts['ventas_marca'].sort_values('revenue'),
+                        x='revenue', y='marca_nombre', orientation='h',
+                        color='revenue', color_continuous_scale='Oranges',
+                        labels={'revenue': 'Ventas', 'marca_nombre': 'Marca'},
+                        title='Top 10 Marcas por Ventas'
+                    )
+                    fig_marcas.update_layout(height=350, yaxis_title=None, xaxis_title=None, showlegend=False)
+                    st.plotly_chart(fig_marcas, use_container_width=True)
+
+            # Gráfico de líneas para ventas por fecha
+            st.markdown("#### 📅 Ventas por Fecha")
+            if 'ventas_fecha' in charts and not charts['ventas_fecha'].empty:
+                fig_fecha = px.line(
+                    charts['ventas_fecha'], x='event_time', y='revenue',
+                    markers=True, line_shape='spline',
+                    labels={'event_time': 'Fecha', 'revenue': 'Ventas'},
+                    title='Ventas por Fecha',
+                    color_discrete_sequence=[COLORS['primary']]
+                )
+                fig_fecha.update_layout(height=350, xaxis_title=None, yaxis_title=None, showlegend=False)
+                st.plotly_chart(fig_fecha, use_container_width=True)
+
+            # Tablas detalladas en un expander
+            with st.expander("Ver tablas detalladas de ventas por entidad"):
+                st.markdown("##### Top 10 Clientes")
+                if 'ventas_cliente' in charts:
+                    st.dataframe(charts['ventas_cliente'], use_container_width=True)
+                st.markdown("##### Top 10 Productos")
+                if 'ventas_producto' in charts:
+                    st.dataframe(charts['ventas_producto'], use_container_width=True)
+                st.markdown("##### Top 10 Categorías")
+                if 'ventas_categoria' in charts:
+                    st.dataframe(charts['ventas_categoria'], use_container_width=True)
+                st.markdown("##### Top 10 Marcas")
+                if 'ventas_marca' in charts:
+                    st.dataframe(charts['ventas_marca'], use_container_width=True)
+                st.markdown("##### Ventas por Fecha")
+                if 'ventas_fecha' in charts:
+                    st.dataframe(charts['ventas_fecha'], use_container_width=True)
         else:
-            st.info("No hay suficientes datos para mostrar el resumen detallado.")
-    else:
-        st.info("No hay datos de actividad para mostrar.")
-    
+            st.info("No hay datos de actividad para mostrar.")
+
     # Información adicional
     with st.expander("ℹ️ Información del Dashboard"):
         st.markdown("""
